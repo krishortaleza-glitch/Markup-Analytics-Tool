@@ -64,16 +64,25 @@ if inv_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
-        # 🔥 CLEAN KEYS (CRITICAL FIX)
+        # 🔥 BULLETPROOF CLEANING
         # ==============================
-        inv[inv_product] = inv[inv_product].astype(str).str.strip()
-        front[front_product] = front[front_product].astype(str).str.strip()
+        def clean_id(series):
+            return (
+                series.astype(str)
+                .str.strip()
+                .str.replace(r"\.0$", "", regex=True)
+                .str.replace(r"\D", "", regex=True)
+                .str.lstrip("0")
+            )
 
-        inv[inv_store] = inv[inv_store].astype(str).str.strip()
-        store[store_store] = store[store_store].astype(str).str.strip()
+        inv["match_id"] = clean_id(inv[inv_product])
+        front["match_id"] = clean_id(front[front_product])
 
-        tax[tax_state] = tax[tax_state].astype(str).str.strip()
-        store[store_state] = store[store_state].astype(str).str.strip()
+        inv["store_clean"] = inv[inv_store].astype(str).str.strip()
+        store["store_clean"] = store[store_store].astype(str).str.strip()
+
+        tax["state_clean"] = tax[tax_state].astype(str).str.strip()
+        store["state_clean"] = store[store_state].astype(str).str.strip()
 
         # ==============================
         # STEP 1: ACTIVE FRONTLINE
@@ -92,7 +101,7 @@ if inv_file and front_file and tax_file and store_file:
 
         active_front = (
             active_front.sort_values(front_start, ascending=False)
-            .drop_duplicates(subset=[front_product])
+            .drop_duplicates(subset=["match_id"])
         )
 
         progress.progress(20)
@@ -102,49 +111,49 @@ if inv_file and front_file and tax_file and store_file:
         # ==============================
         status.text("Mapping store to state...")
         merged = inv.merge(
-            store[[store_store, store_state]],
-            left_on=inv_store,
-            right_on=store_store,
+            store[["store_clean", "state_clean"]],
+            on="store_clean",
             how="left"
         )
 
         progress.progress(40)
 
         # ==============================
-        # STEP 3: FRONTLINE + FAMILY
+        # STEP 3: FRONTLINE
         # ==============================
-        status.text("Adding frontline + family...")
+        status.text("Matching frontline...")
         merged = merged.merge(
-            active_front[[front_product, front_cost, front_family]],
-            left_on=inv_product,
-            right_on=front_product,
+            active_front[["match_id", front_cost, front_family]],
+            on="match_id",
             how="left"
         )
 
-        progress.progress(55)
+        progress.progress(60)
 
         # ==============================
         # STEP 4: TAX
         # ==============================
-        status.text("Adding tax...")
+        status.text("Applying tax...")
         merged = merged.merge(
-            tax[[tax_state, tax_value]],
-            left_on=store_state,
-            right_on=tax_state,
+            tax[["state_clean", tax_value]],
+            on="state_clean",
             how="left"
         )
 
         progress.progress(70)
 
         # ==============================
-        # CLEAN DUPLICATE COLUMNS
+        # DEBUG MATCH RATE
         # ==============================
-        merged = merged.loc[:, ~merged.columns.duplicated()].copy()
+        match_rate = merged[front_family].notna().mean()
+        st.write(f"✅ Match Rate: {round(match_rate*100,2)}%")
 
         # ==============================
-        # CREATE CLEAN FIELDS
+        # CALCULATIONS
         # ==============================
-        merged["State"] = merged[store_state]
+        status.text("Calculating metrics...")
+
+        merged["State"] = merged["state_clean"]
         merged["Family"] = merged[front_family]
 
         merged["Invoice Cost"] = pd.to_numeric(merged[inv_cost], errors="coerce")
@@ -158,11 +167,6 @@ if inv_file and front_file and tax_file and store_file:
 
         merged["Frontline"] = merged["Frontline"].fillna(0)
         merged["Tax"] = merged["Tax"].fillna(0)
-
-        # ==============================
-        # CALCULATIONS
-        # ==============================
-        status.text("Calculating metrics...")
 
         merged["Total Cost"] = merged["Frontline"] * (1 + merged["Tax"])
         merged["Markup"] = merged["Invoice Cost"] - merged["Total Cost"]
@@ -218,7 +222,7 @@ if inv_file and front_file and tax_file and store_file:
         full_output = merged.copy()
 
         # ==============================
-        # EXPORT WITH HIGHLIGHT
+        # EXPORT + HIGHLIGHT
         # ==============================
         output = BytesIO()
 
