@@ -64,6 +64,18 @@ if inv_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
+        # 🔥 CLEAN KEYS (CRITICAL FIX)
+        # ==============================
+        inv[inv_product] = inv[inv_product].astype(str).str.strip()
+        front[front_product] = front[front_product].astype(str).str.strip()
+
+        inv[inv_store] = inv[inv_store].astype(str).str.strip()
+        store[store_store] = store[store_store].astype(str).str.strip()
+
+        tax[tax_state] = tax[tax_state].astype(str).str.strip()
+        store[store_state] = store[store_state].astype(str).str.strip()
+
+        # ==============================
         # STEP 1: ACTIVE FRONTLINE
         # ==============================
         status.text("Filtering active frontline...")
@@ -99,9 +111,9 @@ if inv_file and front_file and tax_file and store_file:
         progress.progress(40)
 
         # ==============================
-        # STEP 3: FRONTLINE
+        # STEP 3: FRONTLINE + FAMILY
         # ==============================
-        status.text("Adding frontline...")
+        status.text("Adding frontline + family...")
         merged = merged.merge(
             active_front[[front_product, front_cost, front_family]],
             left_on=inv_product,
@@ -125,61 +137,63 @@ if inv_file and front_file and tax_file and store_file:
         progress.progress(70)
 
         # ==============================
-        # CLEAN COLUMNS (SAFE FIX)
+        # CLEAN DUPLICATE COLUMNS
         # ==============================
         merged = merged.loc[:, ~merged.columns.duplicated()].copy()
 
-        # Create clean columns
-        merged["State_clean"] = merged[store_state].astype(str)
-        merged["Family_clean"] = merged[front_family].astype(str)
+        # ==============================
+        # CREATE CLEAN FIELDS
+        # ==============================
+        merged["State"] = merged[store_state]
+        merged["Family"] = merged[front_family]
 
-        merged["InvoiceCost_clean"] = pd.to_numeric(merged[inv_cost], errors="coerce")
-        merged["Frontline_clean"] = pd.to_numeric(merged[front_cost], errors="coerce")
-        merged["Tax_clean"] = pd.to_numeric(merged[tax_value], errors="coerce")
+        merged["Invoice Cost"] = pd.to_numeric(merged[inv_cost], errors="coerce")
+        merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
+        merged["Tax"] = pd.to_numeric(merged[tax_value], errors="coerce")
+
+        # Fix tax %
+        merged["Tax"] = merged["Tax"].apply(
+            lambda x: x/100 if pd.notna(x) and x > 1 else x
+        )
+
+        merged["Frontline"] = merged["Frontline"].fillna(0)
+        merged["Tax"] = merged["Tax"].fillna(0)
 
         # ==============================
         # CALCULATIONS
         # ==============================
         status.text("Calculating metrics...")
 
-        # Convert tax if %
-        merged["Tax_clean"] = merged["Tax_clean"].apply(
-            lambda x: x/100 if pd.notna(x) and x > 1 else x
-        )
+        merged["Total Cost"] = merged["Frontline"] * (1 + merged["Tax"])
+        merged["Markup"] = merged["Invoice Cost"] - merged["Total Cost"]
 
-        merged["Frontline_clean"] = merged["Frontline_clean"].fillna(0)
-        merged["Tax_clean"] = merged["Tax_clean"].fillna(0)
-
-        merged["Total Cost"] = merged["Frontline_clean"] * (1 + merged["Tax_clean"])
-        merged["Markup"] = merged["InvoiceCost_clean"] - merged["Total Cost"]
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
+        merged["Markup %"] = merged["Markup %"].replace([float("inf"), -float("inf")], 0)
 
         progress.progress(85)
 
         # ==============================
-        # FREQUENCY (SAFE)
+        # FREQUENCY
         # ==============================
         status.text("Calculating frequency...")
 
-        freq_df = merged[
-            ["State_clean", "Family_clean", "InvoiceCost_clean"]
-        ].dropna()
+        freq_df = merged[["State", "Family", "Invoice Cost"]].dropna()
 
         freq = (
             freq_df
-            .groupby(["State_clean", "Family_clean", "InvoiceCost_clean"])
+            .groupby(["State", "Family", "Invoice Cost"])
             .size()
             .reset_index(name="Frequency")
         )
 
         freq["Top"] = (
-            freq.groupby(["State_clean", "Family_clean"])["Frequency"]
+            freq.groupby(["State", "Family"])["Frequency"]
             .transform("max") == freq["Frequency"]
         )
 
         merged = merged.merge(
             freq,
-            on=["State_clean", "Family_clean", "InvoiceCost_clean"],
+            on=["State", "Family", "Invoice Cost"],
             how="left"
         )
 
@@ -188,18 +202,20 @@ if inv_file and front_file and tax_file and store_file:
         # ==============================
         # FINAL OUTPUT
         # ==============================
-        final = pd.DataFrame({
-            "State": merged["State_clean"],
-            "Family": merged["Family_clean"],
-            "Invoice Cost": merged["InvoiceCost_clean"],
-            "Frontline": merged["Frontline_clean"],
-            "Tax": merged["Tax_clean"],
-            "Total Cost": merged["Total Cost"],
-            "Markup": merged["Markup"],
-            "Markup %": merged["Markup %"],
-            "Frequency": merged["Frequency"],
-            "Top": merged["Top"]
-        })
+        final = merged[[
+            "State",
+            "Family",
+            "Invoice Cost",
+            "Frontline",
+            "Tax",
+            "Total Cost",
+            "Markup",
+            "Markup %",
+            "Frequency",
+            "Top"
+        ]]
+
+        full_output = merged.copy()
 
         # ==============================
         # EXPORT WITH HIGHLIGHT
@@ -208,6 +224,7 @@ if inv_file and front_file and tax_file and store_file:
 
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             final.to_excel(writer, sheet_name="Analysis", index=False)
+            full_output.to_excel(writer, sheet_name="Full Output", index=False)
 
         output.seek(0)
 
@@ -215,7 +232,6 @@ if inv_file and front_file and tax_file and store_file:
         ws = wb["Analysis"]
 
         green = PatternFill(start_color="C6EFCE", fill_type="solid")
-
         top_col = list(final.columns).index("Top") + 1
 
         for row in range(2, ws.max_row + 1):
