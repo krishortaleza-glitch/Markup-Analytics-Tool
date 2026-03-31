@@ -8,9 +8,6 @@ from openpyxl.styles import PatternFill
 st.set_page_config(page_title="Wholesale Markup Analytics", layout="wide")
 st.title("💰 Wholesale Markup Analytics Tool")
 
-# ==============================
-# LOAD FILES
-# ==============================
 @st.cache_data
 def load_file(file):
     if file.name.endswith(".csv"):
@@ -35,9 +32,6 @@ if inv_file and prod_file and front_file and tax_file and store_file:
 
     st.success("Files loaded")
 
-    # ==============================
-    # COLUMN SELECTORS
-    # ==============================
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
@@ -69,14 +63,13 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
-        # 🔥 CLEAN KEYS
+        # CLEAN DATA
         # ==============================
         inv["ProductID_clean"] = inv[inv_product].astype(str).str.strip()
         prod["ProductID_clean"] = prod[prod_id].astype(str).str.strip()
 
-        # Normalize FAMILY (CRITICAL)
-        prod[prod_family] = prod[prod_family].astype(str).str.strip().str.upper()
-        front[front_family] = front[front_family].astype(str).str.strip().str.upper()
+        prod[prod_family] = prod[prod_family].astype(str).str.upper().str.strip()
+        front[front_family] = front[front_family].astype(str).str.upper().str.strip()
 
         inv["store_clean"] = inv[inv_store].astype(str).str.strip()
         store["store_clean"] = store[store_store].astype(str).str.strip()
@@ -87,7 +80,7 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(10)
 
         # ==============================
-        # STEP 1: MAP PRODUCT → FAMILY
+        # MAP PRODUCT → FAMILY
         # ==============================
         status.text("Mapping Product → Family...")
         merged = inv.merge(
@@ -99,7 +92,7 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(25)
 
         # ==============================
-        # STEP 2: ACTIVE FRONTLINE
+        # ACTIVE FRONTLINE
         # ==============================
         status.text("Filtering active frontline...")
         today = pd.Timestamp.today()
@@ -113,33 +106,42 @@ if inv_file and prod_file and front_file and tax_file and store_file:
             (front[front_end] >= today)
         ]
 
-        # 🔥 FIX: get LATEST frontline per family
+        # Latest per family
         active_front = (
             active_front
             .sort_values(front_start, ascending=False)
-            .groupby(front_family, as_index=False)
-            .first()
+            .drop_duplicates(subset=[front_family])
         )
 
         progress.progress(45)
 
         # ==============================
-        # STEP 3: FAMILY → FRONTLINE
+        # 🔥 FAST PARTIAL MATCH (VECTOR)
         # ==============================
-        status.text("Matching frontline via family...")
-        merged = merged.merge(
-            active_front[[front_family, front_cost]],
-            left_on=prod_family,
-            right_on=front_family,
-            how="left"
-        )
+        status.text("Vectorized family matching...")
 
-        progress.progress(60)
+        # Create mapping table
+        families = merged[prod_family].dropna().unique()
+        front_vals = active_front[[front_family, front_cost]]
+
+        mapping = []
+
+        for fam in families:
+            match = front_vals[
+                front_vals[front_family].str.contains(fam, na=False)
+            ]
+            if len(match) > 0:
+                mapping.append((fam, match.iloc[0][front_cost]))
+
+        map_df = pd.DataFrame(mapping, columns=[prod_family, "Frontline"])
+
+        merged = merged.merge(map_df, on=prod_family, how="left")
+
+        progress.progress(65)
 
         # ==============================
-        # STEP 4: STORE → STATE
+        # STORE → STATE
         # ==============================
-        status.text("Mapping store...")
         merged = merged.merge(
             store[["store_clean", "state_clean"]],
             on="store_clean",
@@ -149,9 +151,8 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(75)
 
         # ==============================
-        # STEP 5: TAX
+        # TAX
         # ==============================
-        status.text("Applying tax...")
         merged = merged.merge(
             tax[["state_clean", tax_value]],
             on="state_clean",
@@ -161,19 +162,13 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(85)
 
         # ==============================
-        # DEBUG MATCH RATE
-        # ==============================
-        st.write("Frontline Match Rate:",
-                 round(merged[front_cost].notna().mean()*100, 2), "%")
-
-        # ==============================
         # CALCULATIONS
         # ==============================
         merged["State"] = merged["state_clean"]
         merged["Family"] = merged[prod_family]
 
         merged["Invoice Cost"] = pd.to_numeric(merged[inv_cost], errors="coerce")
-        merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
+        merged["Frontline"] = pd.to_numeric(merged["Frontline"], errors="coerce")
         merged["Tax"] = pd.to_numeric(merged[tax_value], errors="coerce")
 
         merged["Tax"] = merged["Tax"].apply(
