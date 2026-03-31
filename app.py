@@ -103,7 +103,7 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(35)
+        progress.progress(40)
 
         # STEP 3: FRONTLINE + FAMILY
         status.text("Adding frontline + family...")
@@ -114,7 +114,7 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(50)
+        progress.progress(55)
 
         # STEP 4: TAX
         status.text("Adding tax...")
@@ -125,24 +125,34 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(65)
+        progress.progress(70)
 
         # ==============================
-        # CLEAN + CALCULATE
+        # CLEAN COLUMN ISSUES (CRITICAL FIX)
+        # ==============================
+        merged = merged.loc[:, ~merged.columns.duplicated()]
+
+        # ==============================
+        # CALCULATIONS
         # ==============================
         status.text("Calculating metrics...")
 
-        merged.rename(columns={
+        merged = merged.rename(columns={
             inv_cost: "Invoice Cost",
             front_cost: "Frontline",
             front_family: "Family",
             tax_value: "Tax",
             store_state: "State"
-        }, inplace=True)
+        })
 
-        # Convert tax to decimal if %
+        # Ensure numeric
+        merged["Invoice Cost"] = pd.to_numeric(merged["Invoice Cost"], errors="coerce")
+        merged["Frontline"] = pd.to_numeric(merged["Frontline"], errors="coerce")
+        merged["Tax"] = pd.to_numeric(merged["Tax"], errors="coerce")
+
+        # Convert tax if %
         merged["Tax"] = merged["Tax"].apply(
-            lambda x: x/100 if x > 1 else x
+            lambda x: x/100 if pd.notna(x) and x > 1 else x
         )
 
         merged["Frontline"] = merged["Frontline"].fillna(0)
@@ -152,12 +162,14 @@ if inv_file and front_file and tax_file and store_file:
         merged["Markup"] = merged["Invoice Cost"] - merged["Total Cost"]
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
 
-        progress.progress(80)
+        progress.progress(85)
 
         # ==============================
-        # FREQUENCY
+        # FREQUENCY (SAFE)
         # ==============================
         status.text("Calculating frequency...")
+
+        merged = merged.dropna(subset=["State", "Family", "Invoice Cost"])
 
         freq = (
             merged
@@ -173,8 +185,7 @@ if inv_file and front_file and tax_file and store_file:
         )
 
         # Identify most frequent
-        max_freq = freq.groupby(["State", "Family"])["Frequency"].transform("max")
-        freq["Top"] = freq["Frequency"] == max_freq
+        freq["Top"] = freq.groupby(["State", "Family"])["Frequency"].transform("max") == freq["Frequency"]
 
         merged = merged.merge(
             freq[["State", "Family", "Invoice Cost", "Top"]],
@@ -182,7 +193,7 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(90)
+        progress.progress(95)
 
         # ==============================
         # FINAL OUTPUT
