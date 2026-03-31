@@ -69,16 +69,22 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
-        # CLEAN KEYS
+        # 🔥 CLEAN KEYS
         # ==============================
         inv["ProductID_clean"] = inv[inv_product].astype(str).str.strip()
         prod["ProductID_clean"] = prod[prod_id].astype(str).str.strip()
+
+        # Normalize FAMILY (CRITICAL)
+        prod[prod_family] = prod[prod_family].astype(str).str.strip().str.upper()
+        front[front_family] = front[front_family].astype(str).str.strip().str.upper()
 
         inv["store_clean"] = inv[inv_store].astype(str).str.strip()
         store["store_clean"] = store[store_store].astype(str).str.strip()
 
         store["state_clean"] = store[store_state].astype(str).str.strip()
         tax["state_clean"] = tax[tax_state].astype(str).str.strip()
+
+        progress.progress(10)
 
         # ==============================
         # STEP 1: MAP PRODUCT → FAMILY
@@ -90,7 +96,7 @@ if inv_file and prod_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(20)
+        progress.progress(25)
 
         # ==============================
         # STEP 2: ACTIVE FRONTLINE
@@ -107,12 +113,15 @@ if inv_file and prod_file and front_file and tax_file and store_file:
             (front[front_end] >= today)
         ]
 
+        # 🔥 FIX: get LATEST frontline per family
         active_front = (
-            active_front.sort_values(front_start, ascending=False)
-            .drop_duplicates(subset=[front_family])
+            active_front
+            .sort_values(front_start, ascending=False)
+            .groupby(front_family, as_index=False)
+            .first()
         )
 
-        progress.progress(40)
+        progress.progress(45)
 
         # ==============================
         # STEP 3: FAMILY → FRONTLINE
@@ -152,6 +161,12 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(85)
 
         # ==============================
+        # DEBUG MATCH RATE
+        # ==============================
+        st.write("Frontline Match Rate:",
+                 round(merged[front_cost].notna().mean()*100, 2), "%")
+
+        # ==============================
         # CALCULATIONS
         # ==============================
         merged["State"] = merged["state_clean"]
@@ -173,6 +188,8 @@ if inv_file and prod_file and front_file and tax_file and store_file:
 
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
         merged["Markup %"] = merged["Markup %"].replace([float("inf"), -float("inf")], 0)
+
+        progress.progress(90)
 
         # ==============================
         # FREQUENCY
