@@ -36,45 +36,37 @@ if inv_file and front_file and tax_file and store_file:
     # ==============================
     # COLUMN SELECTORS
     # ==============================
-    st.header("Select Columns")
-
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.subheader("Invoices")
-        inv_store = st.selectbox("Store", inv.columns)
-        inv_product = st.selectbox("ProductID", inv.columns)
+        inv_store = st.selectbox("Invoice Store", inv.columns)
+        inv_product = st.selectbox("Invoice ProductID", inv.columns)
         inv_cost = st.selectbox("Invoice Cost", inv.columns)
 
     with col2:
-        st.subheader("Frontline")
-        front_product = st.selectbox("ProductID (Frontline)", front.columns)
+        front_product = st.selectbox("Frontline ProductID", front.columns)
         front_cost = st.selectbox("Frontline Cost", front.columns)
         front_family = st.selectbox("Family", front.columns)
         front_start = st.selectbox("Start Date", front.columns)
         front_end = st.selectbox("End Date", front.columns)
 
     with col3:
-        st.subheader("Taxes")
-        tax_state = st.selectbox("State (Tax)", tax.columns)
-        tax_value = st.selectbox("Tax", tax.columns)
+        tax_state = st.selectbox("Tax State", tax.columns)
+        tax_value = st.selectbox("Tax Value", tax.columns)
 
     with col4:
-        st.subheader("Storelist")
-        store_store = st.selectbox("Store (Storelist)", store.columns)
-        store_state = st.selectbox("State", store.columns)
+        store_store = st.selectbox("Storelist Store", store.columns)
+        store_state = st.selectbox("Storelist State", store.columns)
 
-    # ==============================
-    # PROCESS
-    # ==============================
     if st.button("🚀 Run Analysis"):
 
         progress = st.progress(0)
         status = st.empty()
 
+        # ==============================
         # STEP 1: ACTIVE FRONTLINE
+        # ==============================
         status.text("Filtering active frontline...")
-
         today = pd.Timestamp.today()
 
         front[front_start] = pd.to_datetime(front[front_start], errors="coerce")
@@ -87,14 +79,15 @@ if inv_file and front_file and tax_file and store_file:
         ]
 
         active_front = (
-            active_front
-            .sort_values(front_start, ascending=False)
+            active_front.sort_values(front_start, ascending=False)
             .drop_duplicates(subset=[front_product])
         )
 
         progress.progress(20)
 
+        # ==============================
         # STEP 2: STORE → STATE
+        # ==============================
         status.text("Mapping store to state...")
         merged = inv.merge(
             store[[store_store, store_state]],
@@ -105,8 +98,10 @@ if inv_file and front_file and tax_file and store_file:
 
         progress.progress(40)
 
-        # STEP 3: FRONTLINE + FAMILY
-        status.text("Adding frontline + family...")
+        # ==============================
+        # STEP 3: FRONTLINE
+        # ==============================
+        status.text("Adding frontline...")
         merged = merged.merge(
             active_front[[front_product, front_cost, front_family]],
             left_on=inv_product,
@@ -116,7 +111,9 @@ if inv_file and front_file and tax_file and store_file:
 
         progress.progress(55)
 
+        # ==============================
         # STEP 4: TAX
+        # ==============================
         status.text("Adding tax...")
         merged = merged.merge(
             tax[[tax_state, tax_value]],
@@ -128,68 +125,62 @@ if inv_file and front_file and tax_file and store_file:
         progress.progress(70)
 
         # ==============================
-        # CLEAN COLUMN ISSUES (CRITICAL FIX)
+        # 🔥 CRITICAL FIX (CLEAN COLUMNS)
         # ==============================
-        merged = merged.loc[:, ~merged.columns.duplicated()]
+        merged.columns = pd.io.parsers.ParserBase({'names': merged.columns})._maybe_dedup_names(merged.columns)
+
+        # Rename safely
+        merged["State_clean"] = merged[store_state]
+        merged["Family_clean"] = merged[front_family]
+        merged["InvoiceCost_clean"] = merged[inv_cost]
+        merged["Frontline_clean"] = merged[front_cost]
+        merged["Tax_clean"] = merged[tax_value]
 
         # ==============================
         # CALCULATIONS
         # ==============================
         status.text("Calculating metrics...")
 
-        merged = merged.rename(columns={
-            inv_cost: "Invoice Cost",
-            front_cost: "Frontline",
-            front_family: "Family",
-            tax_value: "Tax",
-            store_state: "State"
-        })
+        merged["InvoiceCost_clean"] = pd.to_numeric(merged["InvoiceCost_clean"], errors="coerce")
+        merged["Frontline_clean"] = pd.to_numeric(merged["Frontline_clean"], errors="coerce")
+        merged["Tax_clean"] = pd.to_numeric(merged["Tax_clean"], errors="coerce")
 
-        # Ensure numeric
-        merged["Invoice Cost"] = pd.to_numeric(merged["Invoice Cost"], errors="coerce")
-        merged["Frontline"] = pd.to_numeric(merged["Frontline"], errors="coerce")
-        merged["Tax"] = pd.to_numeric(merged["Tax"], errors="coerce")
-
-        # Convert tax if %
-        merged["Tax"] = merged["Tax"].apply(
+        merged["Tax_clean"] = merged["Tax_clean"].apply(
             lambda x: x/100 if pd.notna(x) and x > 1 else x
         )
 
-        merged["Frontline"] = merged["Frontline"].fillna(0)
-        merged["Tax"] = merged["Tax"].fillna(0)
+        merged["Frontline_clean"] = merged["Frontline_clean"].fillna(0)
+        merged["Tax_clean"] = merged["Tax_clean"].fillna(0)
 
-        merged["Total Cost"] = merged["Frontline"] * (1 + merged["Tax"])
-        merged["Markup"] = merged["Invoice Cost"] - merged["Total Cost"]
+        merged["Total Cost"] = merged["Frontline_clean"] * (1 + merged["Tax_clean"])
+        merged["Markup"] = merged["InvoiceCost_clean"] - merged["Total Cost"]
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
 
         progress.progress(85)
 
         # ==============================
-        # FREQUENCY (SAFE)
+        # 🔥 BULLETPROOF FREQUENCY
         # ==============================
         status.text("Calculating frequency...")
 
-        merged = merged.dropna(subset=["State", "Family", "Invoice Cost"])
+        freq_df = merged[[
+            "State_clean",
+            "Family_clean",
+            "InvoiceCost_clean"
+        ]].dropna()
 
         freq = (
-            merged
-            .groupby(["State", "Family", "Invoice Cost"])
+            freq_df
+            .groupby(["State_clean", "Family_clean", "InvoiceCost_clean"])
             .size()
             .reset_index(name="Frequency")
         )
 
+        freq["Top"] = freq.groupby(["State_clean", "Family_clean"])["Frequency"].transform("max") == freq["Frequency"]
+
         merged = merged.merge(
             freq,
-            on=["State", "Family", "Invoice Cost"],
-            how="left"
-        )
-
-        # Identify most frequent
-        freq["Top"] = freq.groupby(["State", "Family"])["Frequency"].transform("max") == freq["Frequency"]
-
-        merged = merged.merge(
-            freq[["State", "Family", "Invoice Cost", "Top"]],
-            on=["State", "Family", "Invoice Cost"],
+            on=["State_clean", "Family_clean", "InvoiceCost_clean"],
             how="left"
         )
 
@@ -198,18 +189,18 @@ if inv_file and front_file and tax_file and store_file:
         # ==============================
         # FINAL OUTPUT
         # ==============================
-        final = merged[[
-            "State",
-            "Family",
-            "Invoice Cost",
-            "Frontline",
-            "Tax",
-            "Total Cost",
-            "Markup",
-            "Markup %",
-            "Frequency",
-            "Top"
-        ]]
+        final = pd.DataFrame({
+            "State": merged["State_clean"],
+            "Family": merged["Family_clean"],
+            "Invoice Cost": merged["InvoiceCost_clean"],
+            "Frontline": merged["Frontline_clean"],
+            "Tax": merged["Tax_clean"],
+            "Total Cost": merged["Total Cost"],
+            "Markup": merged["Markup"],
+            "Markup %": merged["Markup %"],
+            "Frequency": merged["Frequency"],
+            "Top": merged["Top"]
+        })
 
         # ==============================
         # EXPORT WITH HIGHLIGHT
