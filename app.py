@@ -8,9 +8,6 @@ from openpyxl.styles import PatternFill
 st.set_page_config(page_title="Wholesale Markup Analytics", layout="wide")
 st.title("💰 Wholesale Markup Analytics Tool")
 
-# ==============================
-# LOAD FILES
-# ==============================
 @st.cache_data
 def load_file(file):
     if file.name.endswith(".csv"):
@@ -35,9 +32,6 @@ if inv_file and prod_file and front_file and tax_file and store_file:
 
     st.success("Files loaded")
 
-    # ==============================
-    # COLUMN SELECTORS
-    # ==============================
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
@@ -96,14 +90,12 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         progress.progress(25)
 
         # ==============================
-        # 🔥 STRICT ACTIVE FRONTLINE
+        # ACTIVE FRONTLINE
         # ==============================
         today = pd.Timestamp.today().normalize()
 
         front[front_start] = pd.to_datetime(front[front_start], errors="coerce")
         front[front_end] = pd.to_datetime(front[front_end], errors="coerce")
-
-        # Treat blank end dates as active
         front[front_end] = front[front_end].fillna(pd.Timestamp.max)
 
         active_front = front[
@@ -111,7 +103,6 @@ if inv_file and prod_file and front_file and tax_file and store_file:
             (front[front_end] >= today)
         ].copy()
 
-        # Get latest active per family
         active_front = (
             active_front
             .sort_values(front_start, ascending=False)
@@ -161,19 +152,19 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
         merged["Tax"] = pd.to_numeric(merged[tax_value], errors="coerce")
 
-        # Convert % if needed
-        merged["Tax"] = merged["Tax"].apply(
-            lambda x: x/100 if pd.notna(x) and x > 1 else x
-        )
-
         merged["Frontline"] = merged["Frontline"].fillna(0)
         merged["Tax"] = merged["Tax"].fillna(0)
 
-        merged["Total Cost"] = merged["Frontline"] * (1 + merged["Tax"])
+        merged["Total Cost"] = merged["Frontline"] + merged["Tax"]
         merged["Markup"] = merged["Invoice Cost"] - merged["Total Cost"]
-
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
+
         merged["Markup %"] = merged["Markup %"].replace([float("inf"), -float("inf")], 0)
+
+        # 🎯 FORMAT
+        merged["Total Cost"] = merged["Total Cost"].round(2)
+        merged["Markup"] = merged["Markup"].round(2)
+        merged["Markup %"] = merged["Markup %"].round(3)
 
         progress.progress(90)
 
@@ -195,15 +186,15 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         merged = merged.merge(freq, on=["State", "Family", "Invoice Cost"], how="left")
 
         # ==============================
-        # FINAL OUTPUT
+        # FINAL OUTPUT (REMOVE DUPES)
         # ==============================
         final = merged[[
             "State","Family","Invoice Cost","Frontline","Tax",
             "Total Cost","Markup","Markup %","Frequency","Top"
-        ]]
+        ]].drop_duplicates()
 
         # ==============================
-        # EXPORT + HIGHLIGHT
+        # EXPORT
         # ==============================
         output = BytesIO()
 
