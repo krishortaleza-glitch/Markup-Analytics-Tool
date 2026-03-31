@@ -64,19 +64,10 @@ if inv_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
-        # 🔥 BULLETPROOF CLEANING
+        # ✅ CLEAN KEYS (VLOOKUP STYLE)
         # ==============================
-        def clean_id(series):
-            return (
-                series.astype(str)
-                .str.strip()
-                .str.replace(r"\.0$", "", regex=True)
-                .str.replace(r"\D", "", regex=True)
-                .str.lstrip("0")
-            )
-
-        inv["match_id"] = clean_id(inv[inv_product])
-        front["match_id"] = clean_id(front[front_product])
+        inv["match_id"] = inv[inv_product].astype(str).str.strip()
+        front["match_id"] = front[front_product].astype(str).str.strip()
 
         inv["store_clean"] = inv[inv_store].astype(str).str.strip()
         store["store_clean"] = store[store_store].astype(str).str.strip()
@@ -104,22 +95,22 @@ if inv_file and front_file and tax_file and store_file:
             .drop_duplicates(subset=["match_id"])
         )
 
-        progress.progress(20)
+        progress.progress(25)
 
         # ==============================
         # STEP 2: STORE → STATE
         # ==============================
-        status.text("Mapping store to state...")
+        status.text("Mapping store...")
         merged = inv.merge(
             store[["store_clean", "state_clean"]],
             on="store_clean",
             how="left"
         )
 
-        progress.progress(40)
+        progress.progress(50)
 
         # ==============================
-        # STEP 3: FRONTLINE
+        # STEP 3: FRONTLINE (VLOOKUP MATCH)
         # ==============================
         status.text("Matching frontline...")
         merged = merged.merge(
@@ -128,7 +119,7 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(60)
+        progress.progress(65)
 
         # ==============================
         # STEP 4: TAX
@@ -140,13 +131,13 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(70)
+        progress.progress(75)
 
         # ==============================
-        # DEBUG MATCH RATE
+        # 🔍 MATCH DEBUG
         # ==============================
         match_rate = merged[front_family].notna().mean()
-        st.write(f"✅ Match Rate: {round(match_rate*100,2)}%")
+        st.write(f"Match Rate: {round(match_rate*100,2)}%")
 
         # ==============================
         # CALCULATIONS
@@ -160,7 +151,6 @@ if inv_file and front_file and tax_file and store_file:
         merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
         merged["Tax"] = pd.to_numeric(merged[tax_value], errors="coerce")
 
-        # Fix tax %
         merged["Tax"] = merged["Tax"].apply(
             lambda x: x/100 if pd.notna(x) and x > 1 else x
         )
@@ -181,10 +171,9 @@ if inv_file and front_file and tax_file and store_file:
         # ==============================
         status.text("Calculating frequency...")
 
-        freq_df = merged[["State", "Family", "Invoice Cost"]].dropna()
-
         freq = (
-            freq_df
+            merged
+            .dropna(subset=["State", "Family", "Invoice Cost"])
             .groupby(["State", "Family", "Invoice Cost"])
             .size()
             .reset_index(name="Frequency")
@@ -195,11 +184,7 @@ if inv_file and front_file and tax_file and store_file:
             .transform("max") == freq["Frequency"]
         )
 
-        merged = merged.merge(
-            freq,
-            on=["State", "Family", "Invoice Cost"],
-            how="left"
-        )
+        merged = merged.merge(freq, on=["State", "Family", "Invoice Cost"], how="left")
 
         progress.progress(95)
 
