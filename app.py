@@ -125,26 +125,24 @@ if inv_file and front_file and tax_file and store_file:
         progress.progress(70)
 
         # ==============================
-        # 🔥 CRITICAL FIX (CLEAN COLUMNS)
+        # CLEAN COLUMNS (SAFE FIX)
         # ==============================
-        merged.columns = pd.io.parsers.ParserBase({'names': merged.columns})._maybe_dedup_names(merged.columns)
+        merged = merged.loc[:, ~merged.columns.duplicated()].copy()
 
-        # Rename safely
-        merged["State_clean"] = merged[store_state]
-        merged["Family_clean"] = merged[front_family]
-        merged["InvoiceCost_clean"] = merged[inv_cost]
-        merged["Frontline_clean"] = merged[front_cost]
-        merged["Tax_clean"] = merged[tax_value]
+        # Create clean columns
+        merged["State_clean"] = merged[store_state].astype(str)
+        merged["Family_clean"] = merged[front_family].astype(str)
+
+        merged["InvoiceCost_clean"] = pd.to_numeric(merged[inv_cost], errors="coerce")
+        merged["Frontline_clean"] = pd.to_numeric(merged[front_cost], errors="coerce")
+        merged["Tax_clean"] = pd.to_numeric(merged[tax_value], errors="coerce")
 
         # ==============================
         # CALCULATIONS
         # ==============================
         status.text("Calculating metrics...")
 
-        merged["InvoiceCost_clean"] = pd.to_numeric(merged["InvoiceCost_clean"], errors="coerce")
-        merged["Frontline_clean"] = pd.to_numeric(merged["Frontline_clean"], errors="coerce")
-        merged["Tax_clean"] = pd.to_numeric(merged["Tax_clean"], errors="coerce")
-
+        # Convert tax if %
         merged["Tax_clean"] = merged["Tax_clean"].apply(
             lambda x: x/100 if pd.notna(x) and x > 1 else x
         )
@@ -159,15 +157,13 @@ if inv_file and front_file and tax_file and store_file:
         progress.progress(85)
 
         # ==============================
-        # 🔥 BULLETPROOF FREQUENCY
+        # FREQUENCY (SAFE)
         # ==============================
         status.text("Calculating frequency...")
 
-        freq_df = merged[[
-            "State_clean",
-            "Family_clean",
-            "InvoiceCost_clean"
-        ]].dropna()
+        freq_df = merged[
+            ["State_clean", "Family_clean", "InvoiceCost_clean"]
+        ].dropna()
 
         freq = (
             freq_df
@@ -176,7 +172,10 @@ if inv_file and front_file and tax_file and store_file:
             .reset_index(name="Frequency")
         )
 
-        freq["Top"] = freq.groupby(["State_clean", "Family_clean"])["Frequency"].transform("max") == freq["Frequency"]
+        freq["Top"] = (
+            freq.groupby(["State_clean", "Family_clean"])["Frequency"]
+            .transform("max") == freq["Frequency"]
+        )
 
         merged = merged.merge(
             freq,
