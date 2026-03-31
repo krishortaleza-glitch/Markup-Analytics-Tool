@@ -20,13 +20,15 @@ def load_file(file):
 st.header("Upload Files")
 
 inv_file = st.file_uploader("Invoices", type=["xlsx", "csv"])
+prod_file = st.file_uploader("Products File", type=["xlsx", "csv"])
 front_file = st.file_uploader("Frontline", type=["xlsx", "csv"])
 tax_file = st.file_uploader("Taxes", type=["xlsx", "csv"])
 store_file = st.file_uploader("Storelist", type=["xlsx", "csv"])
 
-if inv_file and front_file and tax_file and store_file:
+if inv_file and prod_file and front_file and tax_file and store_file:
 
     inv = load_file(inv_file)
+    prod = load_file(prod_file)
     front = load_file(front_file)
     tax = load_file(tax_file)
     store = load_file(store_file)
@@ -36,7 +38,7 @@ if inv_file and front_file and tax_file and store_file:
     # ==============================
     # COLUMN SELECTORS
     # ==============================
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         inv_store = st.selectbox("Invoice Store", inv.columns)
@@ -44,17 +46,20 @@ if inv_file and front_file and tax_file and store_file:
         inv_cost = st.selectbox("Invoice Cost", inv.columns)
 
     with col2:
-        front_product = st.selectbox("Frontline ProductID", front.columns)
+        prod_id = st.selectbox("Products ProductID", prod.columns)
+        prod_family = st.selectbox("Products Family", prod.columns)
+
+    with col3:
+        front_family = st.selectbox("Frontline Family", front.columns)
         front_cost = st.selectbox("Frontline Cost", front.columns)
-        front_family = st.selectbox("Family", front.columns)
         front_start = st.selectbox("Start Date", front.columns)
         front_end = st.selectbox("End Date", front.columns)
 
-    with col3:
+    with col4:
         tax_state = st.selectbox("Tax State", tax.columns)
         tax_value = st.selectbox("Tax Value", tax.columns)
 
-    with col4:
+    with col5:
         store_store = st.selectbox("Storelist Store", store.columns)
         store_state = st.selectbox("Storelist State", store.columns)
 
@@ -64,19 +69,31 @@ if inv_file and front_file and tax_file and store_file:
         status = st.empty()
 
         # ==============================
-        # ✅ CLEAN KEYS (VLOOKUP STYLE)
+        # CLEAN KEYS
         # ==============================
-        inv["match_id"] = inv[inv_product].astype(str).str.strip()
-        front["match_id"] = front[front_product].astype(str).str.strip()
+        inv["ProductID_clean"] = inv[inv_product].astype(str).str.strip()
+        prod["ProductID_clean"] = prod[prod_id].astype(str).str.strip()
 
         inv["store_clean"] = inv[inv_store].astype(str).str.strip()
         store["store_clean"] = store[store_store].astype(str).str.strip()
 
-        tax["state_clean"] = tax[tax_state].astype(str).str.strip()
         store["state_clean"] = store[store_state].astype(str).str.strip()
+        tax["state_clean"] = tax[tax_state].astype(str).str.strip()
 
         # ==============================
-        # STEP 1: ACTIVE FRONTLINE
+        # STEP 1: MAP PRODUCT → FAMILY
+        # ==============================
+        status.text("Mapping Product → Family...")
+        merged = inv.merge(
+            prod[["ProductID_clean", prod_family]],
+            on="ProductID_clean",
+            how="left"
+        )
+
+        progress.progress(20)
+
+        # ==============================
+        # STEP 2: ACTIVE FRONTLINE
         # ==============================
         status.text("Filtering active frontline...")
         today = pd.Timestamp.today()
@@ -92,37 +109,38 @@ if inv_file and front_file and tax_file and store_file:
 
         active_front = (
             active_front.sort_values(front_start, ascending=False)
-            .drop_duplicates(subset=["match_id"])
+            .drop_duplicates(subset=[front_family])
         )
 
-        progress.progress(25)
+        progress.progress(40)
 
         # ==============================
-        # STEP 2: STORE → STATE
+        # STEP 3: FAMILY → FRONTLINE
+        # ==============================
+        status.text("Matching frontline via family...")
+        merged = merged.merge(
+            active_front[[front_family, front_cost]],
+            left_on=prod_family,
+            right_on=front_family,
+            how="left"
+        )
+
+        progress.progress(60)
+
+        # ==============================
+        # STEP 4: STORE → STATE
         # ==============================
         status.text("Mapping store...")
-        merged = inv.merge(
+        merged = merged.merge(
             store[["store_clean", "state_clean"]],
             on="store_clean",
             how="left"
         )
 
-        progress.progress(50)
+        progress.progress(75)
 
         # ==============================
-        # STEP 3: FRONTLINE (VLOOKUP MATCH)
-        # ==============================
-        status.text("Matching frontline...")
-        merged = merged.merge(
-            active_front[["match_id", front_cost, front_family]],
-            on="match_id",
-            how="left"
-        )
-
-        progress.progress(65)
-
-        # ==============================
-        # STEP 4: TAX
+        # STEP 5: TAX
         # ==============================
         status.text("Applying tax...")
         merged = merged.merge(
@@ -131,21 +149,13 @@ if inv_file and front_file and tax_file and store_file:
             how="left"
         )
 
-        progress.progress(75)
-
-        # ==============================
-        # 🔍 MATCH DEBUG
-        # ==============================
-        match_rate = merged[front_family].notna().mean()
-        st.write(f"Match Rate: {round(match_rate*100,2)}%")
+        progress.progress(85)
 
         # ==============================
         # CALCULATIONS
         # ==============================
-        status.text("Calculating metrics...")
-
         merged["State"] = merged["state_clean"]
-        merged["Family"] = merged[front_family]
+        merged["Family"] = merged[prod_family]
 
         merged["Invoice Cost"] = pd.to_numeric(merged[inv_cost], errors="coerce")
         merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
@@ -164,13 +174,9 @@ if inv_file and front_file and tax_file and store_file:
         merged["Markup %"] = merged["Markup"] / merged["Total Cost"]
         merged["Markup %"] = merged["Markup %"].replace([float("inf"), -float("inf")], 0)
 
-        progress.progress(85)
-
         # ==============================
         # FREQUENCY
         # ==============================
-        status.text("Calculating frequency...")
-
         freq = (
             merged
             .dropna(subset=["State", "Family", "Invoice Cost"])
@@ -186,34 +192,19 @@ if inv_file and front_file and tax_file and store_file:
 
         merged = merged.merge(freq, on=["State", "Family", "Invoice Cost"], how="left")
 
-        progress.progress(95)
-
         # ==============================
-        # FINAL OUTPUT
+        # OUTPUT
         # ==============================
         final = merged[[
-            "State",
-            "Family",
-            "Invoice Cost",
-            "Frontline",
-            "Tax",
-            "Total Cost",
-            "Markup",
-            "Markup %",
-            "Frequency",
-            "Top"
+            "State","Family","Invoice Cost","Frontline","Tax",
+            "Total Cost","Markup","Markup %","Frequency","Top"
         ]]
 
-        full_output = merged.copy()
-
-        # ==============================
-        # EXPORT + HIGHLIGHT
-        # ==============================
         output = BytesIO()
 
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             final.to_excel(writer, sheet_name="Analysis", index=False)
-            full_output.to_excel(writer, sheet_name="Full Output", index=False)
+            merged.to_excel(writer, sheet_name="Full Output", index=False)
 
         output.seek(0)
 
@@ -233,7 +224,7 @@ if inv_file and front_file and tax_file and store_file:
         final_output.seek(0)
 
         progress.progress(100)
-        status.text("✅ Done!")
+        st.success("✅ Done!")
 
         st.download_button(
             "📥 Download Analysis",
