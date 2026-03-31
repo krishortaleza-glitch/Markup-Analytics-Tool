@@ -8,6 +8,9 @@ from openpyxl.styles import PatternFill
 st.set_page_config(page_title="Wholesale Markup Analytics", layout="wide")
 st.title("💰 Wholesale Markup Analytics Tool")
 
+# ==============================
+# LOAD FILES
+# ==============================
 @st.cache_data
 def load_file(file):
     if file.name.endswith(".csv"):
@@ -16,11 +19,11 @@ def load_file(file):
 
 st.header("Upload Files")
 
-inv_file = st.file_uploader("Invoices", type=["xlsx", "csv"])
-prod_file = st.file_uploader("Products File", type=["xlsx", "csv"])
-front_file = st.file_uploader("Frontline", type=["xlsx", "csv"])
-tax_file = st.file_uploader("Taxes", type=["xlsx", "csv"])
-store_file = st.file_uploader("Storelist", type=["xlsx", "csv"])
+inv_file = st.file_uploader("Invoices")
+prod_file = st.file_uploader("Products File")
+front_file = st.file_uploader("Frontline")
+tax_file = st.file_uploader("Taxes")
+store_file = st.file_uploader("Storelist")
 
 if inv_file and prod_file and front_file and tax_file and store_file:
 
@@ -32,6 +35,9 @@ if inv_file and prod_file and front_file and tax_file and store_file:
 
     st.success("Files loaded")
 
+    # ==============================
+    # COLUMN SELECTORS
+    # ==============================
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
@@ -60,91 +66,78 @@ if inv_file and prod_file and front_file and tax_file and store_file:
     if st.button("🚀 Run Analysis"):
 
         progress = st.progress(0)
-        status = st.empty()
 
         # ==============================
-        # CLEAN DATA
+        # CLEAN KEYS
         # ==============================
-        inv["ProductID_clean"] = inv[inv_product].astype(str).str.strip()
-        prod["ProductID_clean"] = prod[prod_id].astype(str).str.strip()
+        inv["ProductID"] = inv[inv_product].astype(str).str.strip()
+        prod["ProductID"] = prod[prod_id].astype(str).str.strip()
 
-        prod[prod_family] = prod[prod_family].astype(str).str.upper().str.strip()
-        front[front_family] = front[front_family].astype(str).str.upper().str.strip()
+        prod["Family"] = prod[prod_family].astype(str).str.strip().str.upper()
+        front["Family"] = front[front_family].astype(str).str.strip().str.upper()
 
-        inv["store_clean"] = inv[inv_store].astype(str).str.strip()
-        store["store_clean"] = store[store_store].astype(str).str.strip()
+        inv["Store"] = inv[inv_store].astype(str).str.strip()
+        store["Store"] = store[store_store].astype(str).str.strip()
 
-        store["state_clean"] = store[store_state].astype(str).str.strip()
-        tax["state_clean"] = tax[tax_state].astype(str).str.strip()
+        store["State"] = store[store_state].astype(str).str.strip()
+        tax["State"] = tax[tax_state].astype(str).str.strip()
 
         progress.progress(10)
 
         # ==============================
         # MAP PRODUCT → FAMILY
         # ==============================
-        status.text("Mapping Product → Family...")
         merged = inv.merge(
-            prod[["ProductID_clean", prod_family]],
-            on="ProductID_clean",
+            prod[["ProductID", "Family"]],
+            on="ProductID",
             how="left"
         )
 
         progress.progress(25)
 
         # ==============================
-        # ACTIVE FRONTLINE
+        # 🔥 STRICT ACTIVE FRONTLINE
         # ==============================
-        status.text("Filtering active frontline...")
-        today = pd.Timestamp.today()
+        today = pd.Timestamp.today().normalize()
 
         front[front_start] = pd.to_datetime(front[front_start], errors="coerce")
         front[front_end] = pd.to_datetime(front[front_end], errors="coerce")
+
+        # Treat blank end dates as active
         front[front_end] = front[front_end].fillna(pd.Timestamp.max)
 
         active_front = front[
             (front[front_start] <= today) &
             (front[front_end] >= today)
-        ]
+        ].copy()
 
-        # Latest per family
+        # Get latest active per family
         active_front = (
             active_front
             .sort_values(front_start, ascending=False)
-            .drop_duplicates(subset=[front_family])
+            .groupby("Family", as_index=False)
+            .first()
         )
 
         progress.progress(45)
 
         # ==============================
-        # 🔥 FAST PARTIAL MATCH (VECTOR)
+        # MERGE FRONTLINE
         # ==============================
-        status.text("Vectorized family matching...")
+        merged = merged.merge(
+            active_front[["Family", front_cost]],
+            on="Family",
+            how="left"
+        )
 
-        # Create mapping table
-        families = merged[prod_family].dropna().unique()
-        front_vals = active_front[[front_family, front_cost]]
-
-        mapping = []
-
-        for fam in families:
-            match = front_vals[
-                front_vals[front_family].str.contains(fam, na=False)
-            ]
-            if len(match) > 0:
-                mapping.append((fam, match.iloc[0][front_cost]))
-
-        map_df = pd.DataFrame(mapping, columns=[prod_family, "Frontline"])
-
-        merged = merged.merge(map_df, on=prod_family, how="left")
-
-        progress.progress(65)
+        progress.progress(60)
 
         # ==============================
         # STORE → STATE
         # ==============================
         merged = merged.merge(
-            store[["store_clean", "state_clean"]],
-            on="store_clean",
+            store[["Store", "State"]],
+            on="Store",
             how="left"
         )
 
@@ -154,8 +147,8 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         # TAX
         # ==============================
         merged = merged.merge(
-            tax[["state_clean", tax_value]],
-            on="state_clean",
+            tax[["State", tax_value]],
+            on="State",
             how="left"
         )
 
@@ -164,13 +157,11 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         # ==============================
         # CALCULATIONS
         # ==============================
-        merged["State"] = merged["state_clean"]
-        merged["Family"] = merged[prod_family]
-
         merged["Invoice Cost"] = pd.to_numeric(merged[inv_cost], errors="coerce")
-        merged["Frontline"] = pd.to_numeric(merged["Frontline"], errors="coerce")
+        merged["Frontline"] = pd.to_numeric(merged[front_cost], errors="coerce")
         merged["Tax"] = pd.to_numeric(merged[tax_value], errors="coerce")
 
+        # Convert % if needed
         merged["Tax"] = merged["Tax"].apply(
             lambda x: x/100 if pd.notna(x) and x > 1 else x
         )
@@ -191,7 +182,6 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         # ==============================
         freq = (
             merged
-            .dropna(subset=["State", "Family", "Invoice Cost"])
             .groupby(["State", "Family", "Invoice Cost"])
             .size()
             .reset_index(name="Frequency")
@@ -205,13 +195,16 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         merged = merged.merge(freq, on=["State", "Family", "Invoice Cost"], how="left")
 
         # ==============================
-        # OUTPUT
+        # FINAL OUTPUT
         # ==============================
         final = merged[[
             "State","Family","Invoice Cost","Frontline","Tax",
             "Total Cost","Markup","Markup %","Frequency","Top"
         ]]
 
+        # ==============================
+        # EXPORT + HIGHLIGHT
+        # ==============================
         output = BytesIO()
 
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -236,7 +229,6 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         final_output.seek(0)
 
         progress.progress(100)
-        st.success("✅ Done!")
 
         st.download_button(
             "📥 Download Analysis",
