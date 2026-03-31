@@ -8,6 +8,9 @@ from openpyxl.styles import PatternFill
 st.set_page_config(page_title="Wholesale Markup Analytics", layout="wide")
 st.title("💰 Wholesale Markup Analytics Tool")
 
+# ==============================
+# LOAD FILES
+# ==============================
 @st.cache_data
 def load_file(file):
     if file.name.endswith(".csv"):
@@ -21,6 +24,22 @@ prod_file = st.file_uploader("Products File")
 front_file = st.file_uploader("Frontline")
 tax_file = st.file_uploader("Taxes")
 store_file = st.file_uploader("Storelist")
+
+# ==============================
+# FORMULA DISPLAY
+# ==============================
+st.markdown("### 📊 Markup % Formula")
+
+st.info(
+    """
+    **Markup % = (Invoice Cost - (Frontline + Tax)) / (Frontline + Tax)**
+
+    - Invoice Cost → from Invoice file  
+    - Frontline → Active frontline cost  
+    - Tax → State tax  
+    - Total Cost → Frontline + Tax  
+    """
+)
 
 if inv_file and prod_file and front_file and tax_file and store_file:
 
@@ -161,12 +180,37 @@ if inv_file and prod_file and front_file and tax_file and store_file:
 
         merged["Markup %"] = merged["Markup %"].replace([float("inf"), -float("inf")], 0)
 
-        # 🎯 FORMAT
+        # FORMAT
         merged["Total Cost"] = merged["Total Cost"].round(2)
         merged["Markup"] = merged["Markup"].round(2)
         merged["Markup %"] = merged["Markup %"].round(3)
 
         progress.progress(90)
+
+        # ==============================
+        # 🎯 DYNAMIC EXAMPLE
+        # ==============================
+        example = merged.dropna(subset=["Invoice Cost", "Frontline", "Tax"]).head(1)
+
+        if not example.empty:
+            row = example.iloc[0]
+
+            st.markdown("### 🔍 Live Example Calculation")
+
+            st.success(
+                f"""
+                Invoice Cost = {row['Invoice Cost']:.2f}  
+                Frontline = {row['Frontline']:.2f}  
+                Tax = {row['Tax']:.2f}  
+
+                Total Cost = {row['Total Cost']:.2f}  
+
+                Markup = {row['Markup']:.2f}  
+
+                Markup % = ({row['Invoice Cost']:.2f} - ({row['Frontline']:.2f} + {row['Tax']:.2f})) / {row['Total Cost']:.2f}  
+                = {row['Markup %']:.3f}
+                """
+            )
 
         # ==============================
         # FREQUENCY
@@ -186,7 +230,7 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         merged = merged.merge(freq, on=["State", "Family", "Invoice Cost"], how="left")
 
         # ==============================
-        # FINAL OUTPUT (REMOVE DUPES)
+        # FINAL OUTPUT
         # ==============================
         final = merged[[
             "State","Family","Invoice Cost","Frontline","Tax",
@@ -210,10 +254,10 @@ if inv_file and prod_file and front_file and tax_file and store_file:
         green = PatternFill(start_color="C6EFCE", fill_type="solid")
         top_col = list(final.columns).index("Top") + 1
 
-        for row in range(2, ws.max_row + 1):
-            if ws.cell(row=row, column=top_col).value:
-                for col in range(1, ws.max_column + 1):
-                    ws.cell(row=row, column=col).fill = green
+        for row_idx in range(2, ws.max_row + 1):
+            if ws.cell(row=row_idx, column=top_col).value:
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).fill = green
 
         final_output = BytesIO()
         wb.save(final_output)
